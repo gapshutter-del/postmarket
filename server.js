@@ -30,7 +30,7 @@ app.post('/api/auth/send-otp', async (req, res) => {
   try {
     // Send the email via Resend
     const { data, error } = await resend.emails.send({
-      from: 'PostMarket <noreply@postnstatusmarket.co.za>', // Resend's default sandbox sender
+      from: 'PostMarket <no-reply@postnstatusmarket.co.za>', // Resend's default sandbox sender
       to: email,
       subject: 'Your PostMarket Verification Code',
       html: `

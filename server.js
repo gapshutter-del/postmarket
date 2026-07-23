@@ -159,6 +159,38 @@ app.get('/api/bookings/track/:token', async (req, res) => {
   if (error || !booking) return res.status(404).json({ success: false, message: "Invalid tracking link." });
   res.json({ success: true, booking });
 });
+// ==========================================
+// 4. CREATOR NOTIFICATION ON BOOKING
+// ==========================================
+app.post('/api/notify-creator', async (req, res) => {
+  const { creator_email, booking_id, dates, slots, brief } = req.body;
+  if (!creator_email) return res.status(400).json({ success: false, message: "No creator email" });
+  
+  try {
+    await resend.emails.send({
+      from: 'PostMarket <no-reply@postnstatusmarket.co.za>',
+      to: creator_email,
+      subject: `🔔 New Booking Request #${booking_id}`,
+      html: `
+        <div style="font-family: sans-serif; padding: 20px; max-width: 500px; margin: auto; border: 1px solid #eee; border-radius: 8px;">
+          <h2 style="color: #4F46E5;">New Booking Request!</h2>
+          <p>An advertiser has booked your timeslots. Please log in to your dashboard to Accept or Decline.</p>
+          <div style="background: #F8FAFC; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px;">
+            <strong>Booking ID:</strong> ${booking_id}<br>
+            <strong>Dates:</strong> ${dates.join(', ')}<br>
+            <strong>Timeslots:</strong> ${slots.join(', ')}<br>
+            <strong>Brief:</strong> ${brief || 'None provided'}
+          </div>
+          <a href="https://postnstatusmarket.co.za" style="display: inline-block; background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Open Dashboard</a>
+        </div>
+      `
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Creator Notification Error:", error);
+    res.status(500).json({ success: false });
+  }
+});
 app.listen(PORT, () => {
   console.log(`PostMarket Backend running on port ${PORT}`);
 });

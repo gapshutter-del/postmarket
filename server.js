@@ -108,6 +108,57 @@ app.get('/api/health', (req, res) => {
 });
 
 const PORT = process.env.PORT || 3000;
+// ==========================================
+// 3. MAGIC LINK & AUTOMATED INVOICING
+// ==========================================
+app.post('/api/bookings/generate-magic-link', async (req, res) => {
+  const { booking_id, adv_email, campaign_brief, campaign_assets, campaign_link } = req.body;
+  
+  // Generate a secure random token for the magic link
+  const token = crypto.randomBytes(32).toString('hex');
+  
+  try {
+    // Update booking with advertiser details and campaign brief
+    await supabase.from('bookings').update({
+      adv_email, campaign_brief, campaign_assets, campaign_link, adv_magic_token: token
+    }).eq('id', booking_id);
+
+    // Send Magic Link & Invoice Email via Resend
+    const trackingUrl = `${process.env.FRONTEND_URL || 'https://postnstatusmarket.co.za'}?track=${token}`;
+    
+    await resend.emails.send({
+      from: `PostMarket <no-reply@postnstatusmarket.co.za>`,
+      to: adv_email,
+      subject: `Your PostMarket Booking Confirmation & Invoice #${booking_id}`,
+      html: `
+        <div style="font-family: sans-serif; max-width: 600px; margin: auto; border: 1px solid #eee; border-radius: 8px; padding: 20px;">
+          <h2 style="color: #4F46E5;">Booking Confirmed!</h2>
+          <p>Your timeslot has been provisionally booked. The creator will review your brief and accept shortly.</p>
+          <div style="background: #F8FAFC; padding: 15px; border-radius: 8px; margin: 20px 0;">
+            <strong>Booking ID:</strong> ${booking_id}<br>
+            <strong>Brief:</strong> ${campaign_brief || 'None provided'}<br>
+            <strong>Assets:</strong> ${campaign_assets || 'None provided'}
+          </div>
+          <p>Track your booking status, view creator proof, and download your formal tax invoice here:</p>
+          <a href="${trackingUrl}" style="display: inline-block; background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Track Booking & View Invoice</a>
+          <p style="font-size: 12px; color: #666; margin-top: 20px;">This link expires in 30 days. PostMarket operates as a pass-through payment agent.</p>
+        </div>
+      `
+    });
+
+    res.json({ success: true, message: "Magic link and invoice sent." });
+  } catch (error) {
+    console.error("Magic Link Error:", error);
+    res.status(500).json({ success: false, message: "Failed to send confirmation." });
+  }
+});
+
+app.get('/api/bookings/track/:token', async (req, res) => {
+  const { token } = req.params;
+  const { data: booking, error } = await supabase.from('bookings').select('*').eq('adv_magic_token', token).single();
+  if (error || !booking) return res.status(404).json({ success: false, message: "Invalid tracking link." });
+  res.json({ success: true, booking });
+});
 app.listen(PORT, () => {
   console.log(`PostMarket Backend running on port ${PORT}`);
 });

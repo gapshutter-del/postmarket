@@ -22,7 +22,14 @@
    app.post('/api/auth/send-otp', async (req, res) => {
      const { phone } = req.body;
      if (!phone) return res.status(400).json({ success: false, message: "Phone number required" });
+  const otp = Math.floor(100000 + Math.random() * 900000).toString();
+  otpStore[phone] = { code: otp, expires: Date.now() + 300000 };
 
+  // 🔥 ADD THIS LINE FOR TESTING 🔥
+  console.log(`\n\n🚨 [DEV MODE] The OTP for ${phone} is: ${otp} 🚨\n\n`);
+
+  try {
+    // ... rest of the Meta API code ...
      const otp = Math.floor(100000 + Math.random() * 900000).toString();
      otpStore[phone] = { code: otp, expires: Date.now() + 300000 }; // 5 min expiry
 

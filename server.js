@@ -152,13 +152,18 @@ app.post('/api/bookings/generate-magic-link', async (req, res) => {
     res.status(500).json({ success: false, message: "Failed to send confirmation." });
   }
 });
-
 app.get('/api/bookings/track/:token', async (req, res) => {
   const { token } = req.params;
   const { data: booking, error } = await supabase.from('bookings').select('*').eq('adv_magic_token', token).single();
   if (error || !booking) return res.status(404).json({ success: false, message: "Invalid tracking link." });
+  
+  // Fetch creator name for the tracker UI
+  const { data: creator } = await supabase.from('users').select('name').eq('ref', booking.creator_ref).single();
+  booking.creator_name = creator ? creator.name : 'Unknown Creator';
+  
   res.json({ success: true, booking });
 });
+
 // ==========================================
 // 4. CREATOR NOTIFICATION ON BOOKING
 // ==========================================

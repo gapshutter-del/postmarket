@@ -194,3 +194,38 @@ app.post('/api/notify-creator', async (req, res) => {
 app.listen(PORT, () => {
   console.log(`PostMarket Backend running on port ${PORT}`);
 });
+// ==========================================
+// CREATOR NOTIFICATION (UPDATED WITH ADV NAME & AMOUNT)
+// ==========================================
+app.post('/api/notify-creator', async (req, res) => {
+  const { creator_email, creator_name, adv_name, booking_id, dates, slots, total_fee, brief } = req.body;
+  if (!creator_email) return res.status(400).json({ success: false });
+  
+  try {
+    await resend.emails.send({
+      from: 'PostMarket <no-reply@postnstatusmarket.co.za>',
+      to: creator_email,
+      subject: `🔔 New Booking: R${total_fee.toFixed(2)} from ${adv_name}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; max-width: 500px; margin: auto; color: #0F172A;">
+          <h2 style="color: #4F46E5; margin-bottom: 8px;">New Booking Request!</h2>
+          <p style="color: #475569;">Hi ${creator_name}, an advertiser has booked your timeslots. Please log in to your dashboard to Accept or Decline.</p>
+          <div style="background: #F8FAFC; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; border: 1px solid #E2E8F0;">
+            <strong>Advertiser:</strong> ${adv_name}<br>
+            <strong>Booking ID:</strong> ${booking_id}<br>
+            <strong>Total Payout:</strong> R${total_fee.toFixed(2)}<br>
+            <strong>Dates:</strong> ${dates.join(', ')}<br>
+            <strong>Timeslots:</strong> ${slots.join(', ')}<br>
+            <strong>Brief:</strong> ${brief || 'None provided'}
+          </div>
+          <a href="https://postnstatusmarket.co.za" style="display: inline-block; background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Open Dashboard</a>
+          <p style="font-size: 12px; color: #94A3B8; margin-top: 30px; text-align: center;">Arcon Park, Vereeniging<br><span style="font-size: 10px;">PostMarket is a Sole Proprietorship operated by PB Brantley.</span></p>
+        </div>
+      `
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Creator Notification Error:", error);
+    res.status(500).json({ success: false });
+  }
+});

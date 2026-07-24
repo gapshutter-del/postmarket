@@ -1,11 +1,9 @@
 {
   "name": "postmarket-api",
-  "version": "2.0.0",
-  "description": "PostMarket Backend API v2",
+  "version": "3.0.0",
+  "description": "PostMarket Backend API v3 - Concierge Edition",
   "main": "server.js",
-  "scripts": {
-    "start": "node server.js"
-  },
+  "scripts": { "start": "node server.js" },
   "dependencies": {
     "express": "^4.18.2",
     "cors": "^2.8.5",

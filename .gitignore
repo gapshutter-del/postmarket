@@ -1,1 +1,16 @@
+# Environment Variables (NEVER COMMIT)
 .env
+.env.local
+.env.production
+.env.development
+
+# Dependencies
+node_modules/
+
+# OS Files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/

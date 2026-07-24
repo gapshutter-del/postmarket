@@ -2,7 +2,6 @@ require('dotenv').config();
 const express = require('express');
 const cors = require('cors');
 const bcrypt = require('bcryptjs');
-const crypto = require('crypto');
 const { createClient } = require('@supabase/supabase-js');
 const { Resend } = require('resend');
 
@@ -10,113 +9,189 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Supabase Client
+const SUPABASE_URL = process.env.SUPABASE_URL;
+const SUPABASE_KEY = process.env.SUPABASE_KEY;
+if (!SUPABASE_URL || !SUPABASE_KEY) throw new Error('Missing Supabase environment variables');
+const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+
+// Email Client
+const RESEND_KEY = process.env.RESEND_API_KEY;
+if (!RESEND_KEY) throw new Error('Missing RESEND_API_KEY environment variable');
+const resend = new Resend(RESEND_KEY);
+
 const FROM_EMAIL = 'PostMarket <no-reply@postnstatusmarket.co.za>';
-const FRONTEND_URL = 'https://postnstatusmarket.co.za';
+const FRONTEND_URL = process.env.FRONTEND_URL || 'https://postnstatusmarket.co.za';
 const otpStore = {};
 
-app.get('/api/health', (req, res) => res.json({ status: 'alive', version: '3.0.0' }));
+// Startup Validation
+console.log('[SYSTEM] Environment validated. Supabase & Resend configured.');
+console.log('[SYSTEM] Node version:', process.version);
+console.log('[SYSTEM] Listening on port:', process.env.PORT || 3000);
 
+// ==========================================
+// HEALTH CHECK (Required for Render)
+// ==========================================
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+});
+
+// ==========================================
+// AUTH: SEND OTP
+// ==========================================
 app.post('/api/auth/send-otp', async (req, res) => {
   const { email } = req.body;
-  if (!email) return res.status(400).json({ success: false, message: 'Email required' });
+  if (!email || !email.includes('@')) return res.status(400).json({ success: false, message: 'Valid email required' });
+  
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   otpStore[email.toLowerCase()] = { otp, expires: Date.now() + 600000 };
 
   try {
     await resend.emails.send({
-      from: FROM_EMAIL, to: email, subject: `Your PostMarket Verification Code`,
-      html: `<div style="font-family: 'Inter', sans-serif; color: #1A1A1A; max-width: 500px; margin: auto; padding: 40px 20px;">
-        <h1 style="font-family: 'Playfair Display', serif; font-size: 24px; margin-bottom: 20px;">Verify Your Identity</h1>
-        <p style="line-height: 1.6; color: #5A5A5A;">To ensure the security of your account, please use the following six-digit code to complete your verification. This code will expire in ten minutes.</p>
-        <div style="font-size: 32px; font-weight: 700; letter-spacing: 8px; text-align: center; padding: 24px; background: #f7f2ea; border-radius: 4px; color: #1A1A1A; margin: 30px 0;">${otp}</div>
-        <p style="font-size: 12px; color: #94A3B8; margin-top: 40px; text-align: center;">PostMarket is a Sole Proprietorship operated by PB Brantley. Arcon Park, Vereeniging.</p>
-      </div>`
+      from: FROM_EMAIL,
+      to: email,
+      subject: 'PostMarket Verification Code',
+      html: `
+        <div style="font-family: system-ui, sans-serif; padding: 24px; max-width: 500px; margin: auto; background: #fff; border: 1px solid #eee; border-radius: 8px;">
+          <h2 style="margin: 0 0 16px; color: #1A1A1A;">Verify Your Identity</h2>
+          <p style="margin: 0 0 24px; color: #5A5A5A;">Use this code to continue:</p>
+          <div style="font-size: 28px; font-weight: 700; letter-spacing: 6px; text-align: center; padding: 16px; background: #f7f2ea; border-radius: 6px; color: #1A1A1A; margin-bottom: 24px;">${otp}</div>
+          <p style="font-size: 12px; color: #8E8E8E; margin: 0; text-align: center;">Valid for 10 minutes. If you did not request this, please ignore.</p>
+        </div>`
     });
+    console.log(`[AUTH] OTP sent to ${email}`);
     res.json({ success: true });
-  } catch (error) { res.status(500).json({ success: false, message: 'Failed to send email' }); }
+  } catch (error) {
+    console.error('[AUTH] OTP Send Error:', error.message);
+    res.status(500).json({ success: false, message: 'Failed to send verification email' });
+  }
 });
 
+// ==========================================
+// AUTH: VERIFY OTP
+// ==========================================
 app.post('/api/auth/verify-otp', (req, res) => {
   const { email, otp } = req.body;
-  const stored = otpStore[email?.toLowerCase()];
-  if (!stored) return res.json({ success: false, message: 'No OTP found.' });
-  if (Date.now() > stored.expires) return res.json({ success: false, message: 'Code expired.' });
-  if (stored.otp !== otp) return res.json({ success: false, message: 'Invalid code.' });
+  if (!email || !otp) return res.json({ success: false, message: 'Email and OTP required' });
+  
+  const stored = otpStore[email.toLowerCase()];
+  if (!stored) return res.json({ success: false, message: 'No pending verification. Request a new code.' });
+  if (Date.now() > stored.expires) { delete otpStore[email.toLowerCase()]; return res.json({ success: false, message: 'Code expired. Request a new one.' }); }
+  if (stored.otp !== otp) return res.json({ success: false, message: 'Invalid code. Please try again.' });
+  
   delete otpStore[email.toLowerCase()];
+  console.log(`[AUTH] OTP verified for ${email}`);
   res.json({ success: true });
 });
 
+// ==========================================
+// AUTH: SIGNUP
+// ==========================================
 app.post('/api/auth/signup', async (req, res) => {
-  const { type, email, password, name, ref, company_name } = req.body;
-  if (!email || !password || !name) return res.status(400).json({ success: false, message: 'Missing fields' });
+  const { type, email, password, name, company_name, niche, audience_desc, platforms, total_reach, rate, sa_id, payout_method, wallet_id, bank_name, bank_acc } = req.body;
+  if (!email || !password || !name) return res.status(400).json({ success: false, message: 'Email, password, and name are required' });
+
   try {
+    // Check if already exists
+    const { data: existing } = await supabase.from('users').select('id').eq('email', email.toLowerCase()).single();
+    if (existing) return res.status(409).json({ success: false, message: 'An account with this email already exists' });
+
     const password_hash = await bcrypt.hash(password, 10);
+    const ref = (type === 'creator' ? 'CRT-' : 'ADV-') + Math.floor(100000 + Math.random() * 900000);
+    
+    // Founding member logic
+    const { count } = await supabase.from('users').select('*', { count: 'exact', head: true }).eq('type', 'creator');
+    const isFounding = type === 'creator' && (count || 0) < 50;
+
     const newUser = {
-      ref: ref || (type === 'creator' ? 'CRT-' : 'ADV-') + Math.floor(100000 + Math.random() * 900000),
-      type, name, email, password_hash, status: 'active', company_name: company_name || null,
-      platforms: {}, total_reach: 0, rate: 0, joined_at: new Date().toISOString()
+      ref, type, name, email: email.toLowerCase(), password_hash, status: 'active',
+      company_name: company_name || null, niche: niche || null, audience_desc: audience_desc || null,
+      platforms: platforms || {}, total_reach: total_reach || 0, rate: rate || 0,
+      sa_id: sa_id || null, payout_method: payout_method || null, wallet_id: wallet_id || null, bank_name: bank_name || null, bank_acc: bank_acc || null,
+      is_founding_member: isFounding, free_flight_active: isFounding,
+      joined_at: new Date().toISOString()
     };
+
     const { error } = await supabase.from('users').insert([newUser]);
-    if (error) return res.status(400).json({ success: false, message: error.message });
+    if (error) throw new Error(error.message);
+
     delete newUser.password_hash;
+    console.log(`[AUTH] New account created: ${newUser.ref} (${type})`);
     res.json({ success: true, user: newUser });
-  } catch (error) { res.status(500).json({ success: false, message: 'Server error' }); }
+  } catch (error) {
+    console.error('[AUTH] Signup Error:', error.message);
+    res.status(500).json({ success: false, message: 'Account creation failed' });
+  }
 });
 
+// ==========================================
+// AUTH: LOGIN
+// ==========================================
 app.post('/api/auth/login', async (req, res) => {
   const { email, password } = req.body;
   if (!email || !password) return res.status(400).json({ success: false, message: 'Email and password required' });
+
   try {
     const { data: user, error } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).single();
-    if (error || !user) return res.json({ success: false, message: 'No account found.' });
-    if (user.status !== 'active') return res.json({ success: false, message: 'Account is inactive.' });
+    if (error || !user) return res.json({ success: false, message: 'No account found with this email.' });
+    if (user.status !== 'active') return res.json({ success: false, message: `Account is currently ${user.status}.` });
+
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.json({ success: false, message: 'Incorrect password.' });
+
     delete user.password_hash;
+    console.log(`[AUTH] Login successful: ${user.ref}`);
     res.json({ success: true, user });
-  } catch (error) { res.status(500).json({ success: false, message: 'Server error' }); }
+  } catch (error) {
+    console.error('[AUTH] Login Error:', error.message);
+    res.status(500).json({ success: false, message: 'Server error during login' });
+  }
 });
 
+// ==========================================
+// NOTIFICATIONS
+// ==========================================
 app.post('/api/notify-creator', async (req, res) => {
   const { creator_email, creator_name, adv_name, booking_id, dates, slots, total_fee, brief } = req.body;
+  if (!creator_email) return res.status(400).json({ success: false });
   try {
-    await resend.emails.send({
-      from: FROM_EMAIL, to: creator_email, subject: `New Booking Request: ${booking_id}`,
-      html: `<div style="font-family: 'Inter', sans-serif; color: #1A1A1A; max-width: 500px; margin: auto; padding: 40px 20px;">
-        <h1 style="font-family: 'Playfair Display', serif; font-size: 24px; margin-bottom: 20px;">New Booking Request</h1>
-        <p style="line-height: 1.6; color: #5A5A5A;">Hello ${creator_name}, ${adv_name} has requested to secure your timeslots. Please log in to your dashboard to review the campaign brief and confirm your availability.</p>
-        <div style="background: #f7f2ea; padding: 20px; border-radius: 4px; margin: 30px 0; font-size: 14px; color: #1A1A1A;">
-          <strong>Reference:</strong> ${booking_id}<br>
-          <strong>Remuneration:</strong> R${Number(total_fee).toFixed(2)}<br>
-          <strong>Dates:</strong> ${dates.join(', ')}<br>
-          <strong>Timeslots:</strong> ${slots.join(', ')}
-        </div>
-        <a href="${FRONTEND_URL}" style="display: inline-block; background: #1A1A1A; color: white; padding: 14px 24px; text-decoration: none; border-radius: 4px; font-weight: 600;">Access Dashboard</a>
-        <p style="font-size: 12px; color: #94A3B8; margin-top: 40px; text-align: center;">PostMarket is a Sole Proprietorship operated by PB Brantley. Arcon Park, Vereeniging.</p>
-      </div>`
-    });
+    await resend.emails.send({ from: FROM_EMAIL, to: creator_email, subject: `New Booking Request: R${Number(total_fee).toFixed(2)}`, html: `<div style="font-family:system-ui; padding:20px; max-width:480px; margin:auto; color:#1A1A1A;"><h2>New Booking Request</h2><p>Advertiser: <strong>${adv_name}</strong><br>Amount: <strong>R${Number(total_fee).toFixed(2)}</strong><br>Dates: ${dates.join(', ')}<br>Timeslots: ${slots.join(', ')}<br>Brief: ${brief || 'None'}</p><a href="${FRONTEND_URL}" style="display:inline-block; background:#1A1A1A; color:white; padding:12px 24px; text-decoration:none; border-radius:4px;">Log In & Review</a></div>` });
+    console.log(`[EMAIL] Creator notified: ${creator_email}`);
     res.json({ success: true });
-  } catch (error) { res.status(500).json({ success: false }); }
+  } catch (e) { console.error('[EMAIL] Creator Notify Error:', e.message); res.status(500).json({ success: false }); }
+});
+
+app.post('/api/notify-advertiser', async (req, res) => {
+  const { adv_email, adv_name, booking_id, creator_name, total_fee, dates, slots } = req.body;
+  if (!adv_email) return res.status(400).json({ success: false });
+  try {
+    await resend.emails.send({ from: FROM_EMAIL, to: adv_email, subject: `Booking Confirmed: ${creator_name} | R${Number(total_fee).toFixed(2)}`, html: `<div style="font-family:system-ui; padding:20px; max-width:480px; margin:auto; color:#1A1A1A;"><h2>Booking Confirmed</h2><p>Creator: <strong>${creator_name}</strong><br>Amount: <strong>R${Number(total_fee).toFixed(2)}</strong><br>Dates: ${dates.join(', ')}<br>Timeslots: ${slots.join(', ')}</p><a href="${FRONTEND_URL}" style="display:inline-block; background:#1A1A1A; color:white; padding:12px 24px; text-decoration:none; border-radius:4px;">Track Campaign</a></div>` });
+    console.log(`[EMAIL] Advertiser notified: ${adv_email}`);
+    res.json({ success: true });
+  } catch (e) { console.error('[EMAIL] Advertiser Notify Error:', e.message); res.status(500).json({ success: false }); }
 });
 
 app.post('/api/notify-status-change', async (req, res) => {
   const { adv_email, adv_name, creator_name, booking_id, status } = req.body;
-  const statusText = status === 'confirmed' ? 'has confirmed your booking request.' : 'was unable to accommodate your request at this time.';
+  if (!adv_email) return res.status(400).json({ success: false });
   try {
-    await resend.emails.send({
-      from: FROM_EMAIL, to: adv_email, subject: `Booking Update: ${booking_id}`,
-      html: `<div style="font-family: 'Inter', sans-serif; color: #1A1A1A; max-width: 500px; margin: auto; padding: 40px 20px;">
-        <h1 style="font-family: 'Playfair Display', serif; font-size: 24px; margin-bottom: 20px;">Booking Status Update</h1>
-        <p style="line-height: 1.6; color: #5A5A5A;">Hello ${adv_name}, ${creator_name} ${statusText}</p>
-        <a href="${FRONTEND_URL}" style="display: inline-block; background: #1A1A1A; color: white; padding: 14px 24px; text-decoration: none; border-radius: 4px; font-weight: 600;">View Campaigns</a>
-        <p style="font-size: 12px; color: #94A3B8; margin-top: 40px; text-align: center;">PostMarket is a Sole Proprietorship operated by PB Brantley. Arcon Park, Vereeniging.</p>
-      </div>`
-    });
+    const msg = status === 'confirmed' ? 'has accepted your booking.' : 'has declined your booking. Please try another creator.';
+    await resend.emails.send({ from: FROM_EMAIL, to: adv_email, subject: `Booking Update: ${booking_id}`, html: `<div style="font-family:system-ui; padding:20px; max-width:480px; margin:auto; color:#1A1A1A;"><h2>Booking Status Update</h2><p><strong>${creator_name}</strong> ${msg}</p><a href="${FRONTEND_URL}" style="display:inline-block; background:#1A1A1A; color:white; padding:12px 24px; text-decoration:none; border-radius:4px;">View Dashboard</a></div>` });
+    console.log(`[EMAIL] Status update sent: ${adv_email}`);
     res.json({ success: true });
-  } catch (error) { res.status(500).json({ success: false }); }
+  } catch (e) { console.error('[EMAIL] Status Notify Error:', e.message); res.status(500).json({ success: false }); }
 });
 
+app.get('/api/verify-creator-token/:token', async (req, res) => {
+  try {
+    const { data: user } = await supabase.from('users').select('*').eq('magic_token', req.params.token).single();
+    if (!user) return res.status(404).json({ success: false, message: 'Invalid or expired token' });
+    res.json({ success: true, user });
+  } catch (e) { res.status(500).json({ success: false, message: 'Token verification failed' }); }
+});
+
+// ==========================================
+// SERVER START
+// ==========================================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`PostMarket API v3 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`[SERVER] Running on port ${PORT}`));

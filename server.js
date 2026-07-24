@@ -191,6 +191,48 @@ app.post('/api/notify-creator', async (req, res) => {
     res.status(500).json({ success: false });
   }
 });
+// ==========================================
+// ADVERTISER NOTIFICATION & MAGIC LINK
+// ==========================================
+app.post('/api/notify-advertiser', async (req, res) => {
+  const { adv_email, adv_name, booking_id, creator_name, total_fee, dates, slots } = req.body;
+  if (!adv_email) return res.status(400).json({ success: false, message: "No advertiser email" });
+  
+  // Generate a simple tracking token
+  const token = require('crypto').randomBytes(16).toString('hex');
+  
+  try {
+    // Update booking with the magic token
+    await supabase.from('bookings').update({ adv_magic_token: token }).eq('id', booking_id);
+    
+    const trackingUrl = `https://postnstatusmarket.co.za?track=${token}`;
+
+    await resend.emails.send({
+      from: 'PostMarket <no-reply@postnstatusmarket.co.za>',
+      to: adv_email,
+      subject: `✅ PostMarket Booking Confirmed: ${creator_name} | R${total_fee.toFixed(2)}`,
+      html: `
+        <div style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; padding: 20px; max-width: 500px; margin: auto; color: #0F172A;">
+          <h2 style="color: #4F46E5; margin-bottom: 8px;">Booking Confirmed!</h2>
+          <p style="color: #475569;">Hi ${adv_name}, your timeslot with <strong>${creator_name}</strong> has been provisionally booked. The creator will review your brief and accept shortly.</p>
+          <div style="background: #F8FAFC; padding: 15px; border-radius: 8px; margin: 20px 0; font-size: 14px; border: 1px solid #E2E8F0;">
+            <strong>Booking ID:</strong> ${booking_id}<br>
+            <strong>Amount Paid:</strong> R${total_fee.toFixed(2)}<br>
+            <strong>Dates:</strong> ${dates.join(', ')}<br>
+            <strong>Timeslots:</strong> ${slots.join(', ')}
+          </div>
+          <p style="color: #475569;">You can track the creator's progress and view their proof of post here:</p>
+          <a href="${trackingUrl}" style="display: inline-block; background: #4F46E5; color: white; padding: 12px 24px; text-decoration: none; border-radius: 6px; font-weight: bold;">Track Booking Status</a>
+          <p style="font-size: 12px; color: #94A3B8; margin-top: 30px; text-align: center;">Arcon Park, Vereeniging<br><span style="font-size: 10px;">PostMarket is a Sole Proprietorship operated by PB Brantley.</span></p>
+        </div>
+      `
+    });
+    res.json({ success: true });
+  } catch (error) {
+    console.error("Advertiser Notification Error:", error);
+    res.status(500).json({ success: false });
+  }
+});
 app.listen(PORT, () => {
   console.log(`PostMarket Backend running on port ${PORT}`);
 });

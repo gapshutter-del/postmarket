@@ -26,7 +26,7 @@ if (!RESEND_KEY) {
 }
 const resend = new Resend(RESEND_KEY);
 
-const FROM_EMAIL = 'PostMarket <ramoupi33@gmail.com>';
+const FROM_EMAIL = 'PostMarket <no-reply@postnstatusmarket.co.za>';
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://postnstatusmarket.co.za';
 const otpStore = {};
 

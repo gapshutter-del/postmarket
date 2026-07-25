@@ -1,11 +1,24 @@
-"dependencies": {
-  "@supabase/supabase-js": "^2.45.0",
-  "bcrypt": "^5.1.1",
-  "cors": "^2.8.5",
-  "dotenv": "^16.4.7",
-  "express": "^4.21.0",
-  "express-rate-limit": "^7.4.0",
-  "helmet": "^7.1.0",
-  "jsonwebtoken": "^9.0.2",
-  "resend": "^2.0.0"
+{
+  "name": "postmarket-api",
+  "version": "2.0.0",
+  "description": "PostMarket production backend",
+  "main": "server.js",
+  "engines": {
+    "node": "20.x"
+  },
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "bcrypt": "^5.1.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.7",
+    "express": "^4.21.0",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "resend": "^2.0.0"
+  }
 }

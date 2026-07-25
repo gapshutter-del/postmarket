@@ -1,6 +1,7 @@
 /**
- * PostMarket Backend — Production Server
- * Handles auth, bookings, notifications, and Resend email delivery
+ * POSTMARKET BACKEND — PRODUCTION SERVER
+ * Handles: Auth, OTP Email Delivery, Bookings, Notifications
+ * Runtime: Node.js + Express | DB: Supabase | Email: Resend v2 SDK
  */
 require('dotenv').config();
 const express = require('express');
@@ -12,29 +13,30 @@ const crypto = require('crypto');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// ==================== CONFIGURATION ====================
+// ==================== ENVIRONMENT CONFIGURATION ====================
 const SUPABASE_URL = process.env.SUPABASE_URL;
 const SUPABASE_KEY = process.env.SUPABASE_KEY;
 const RESEND_API_KEY = process.env.RESEND_API_KEY;
 const FRONTEND_URL = process.env.FRONTEND_URL || 'https://postnstatusmarket.co.za';
 
-// Validate critical env vars on startup
+// Validate critical dependencies on boot
 if (!SUPABASE_URL || !SUPABASE_KEY) {
   console.error('[FATAL] Missing SUPABASE_URL or SUPABASE_KEY');
   process.exit(1);
 }
+
 if (!RESEND_API_KEY) {
-  console.warn('[WARN] RESEND_API_KEY not set — email sending will fail');
+  console.warn('[WARN] RESEND_API_KEY not set. Email delivery will fail.');
 }
 
-// Initialize clients
+// ==================== CLIENT INITIALIZATION ====================
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
-// FROM_EMAIL must match your verified sending domain in Resend
+// Must match your verified domain in Resend
 const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@postnstatusmarket.co.za';
 
-// In-memory OTP store (for demo; use Redis in production)
+// In-memory OTP storage (session-based)
 const otpStore = {};
 
 // ==================== MIDDLEWARE ====================
@@ -46,11 +48,10 @@ app.use(cors({
 }));
 app.use(express.json());
 
-// Request logging middleware (with request ID for correlation)
+// Request ID correlation middleware
 app.use((req, res, next) => {
-  const requestId = crypto.randomUUID().slice(0, 8);
-  req.requestId = requestId;
-  console.log(`[${requestId}] ${req.method} ${req.path} from ${req.ip}`);
+  req.requestId = crypto.randomUUID().slice(0, 8);
+  console.log(`[${req.requestId}] ${req.method} ${req.path} | IP: ${req.ip}`);
   next();
 });
 
@@ -58,27 +59,25 @@ app.use((req, res, next) => {
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'healthy',
-    timestamp: new Date().toISOString(),
     requestId: req.requestId,
-    env: {
-      SUPABASE_URL: !!SUPABASE_URL,
-      RESEND_API_KEY: !!RESEND_API_KEY,
-      FROM_EMAIL
+    timestamp: new Date().toISOString(),
+    services: {
+      supabase: !!SUPABASE_URL,
+      resend: !!RESEND_API_KEY,
+      from_email: FROM_EMAIL
     }
   });
 });
 
-// ==================== AUTH ENDPOINTS ====================
+// ==================== AUTH ROUTES ====================
 
 // POST /api/auth/login
 app.post('/api/auth/login', async (req, res) => {
-  const requestId = req.requestId;
   const { email, password } = req.body;
-  
-  console.log(`[${requestId}] Login attempt for: ${email}`);
-  
+  const id = req.requestId;
+
   if (!email || !password) {
-    return res.status(400).json({ success: false, message: 'Email and password required', requestId });
+    return res.status(400).json({ success: false, message: 'Email and password required', requestId: id });
   }
 
   try {
@@ -91,62 +90,44 @@ app.post('/api/auth/login', async (req, res) => {
       .single();
 
     if (error || !user) {
-      console.log(`[${requestId}] Login failed for ${email}: invalid credentials`);
-      return res.status(401).json({ success: false, message: 'Invalid email or password', requestId });
+      console.log(`[${id}] Login failed: ${email}`);
+      return res.status(401).json({ success: false, message: 'Invalid credentials', requestId: id });
     }
 
-    // Remove sensitive fields
     const { password: _, ...safeUser } = user;
-    console.log(`[${requestId}] Login successful for ${email}`);
-    res.json({ success: true, user: safeUser, requestId });
-    
+    console.log(`[${id}] Login success: ${email}`);
+    res.json({ success: true, user: safeUser, requestId: id });
   } catch (err) {
-    console.error(`[${requestId}] Login error:`, err.message);
-    res.status(500).json({ success: false, message: 'Server error during login', requestId });
+    console.error(`[${id}] Login error:`, err.message);
+    res.status(500).json({ success: false, message: 'Server error during login', requestId: id });
   }
 });
 
-// POST /api/auth/send-otp — FIXED: awaits Resend, logs everything, returns correct status
+// POST /api/auth/send-otp — PRODUCTION FIXED
 app.post('/api/auth/send-otp', async (req, res) => {
-  const requestId = req.requestId;
-  console.log(`[${requestId}] POST /api/auth/send-otp - Request received`);
+  const id = req.requestId;
+  console.log(`[${id}] OTP request initiated`);
 
   const { email } = req.body;
-  console.log(`[${requestId}] Email: ${email}`);
-
-  // 1. Validate the email format
   if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-    console.log(`[${requestId}] Validation failed`);
-    return res.status(400).json({ 
-      success: false, 
-      error: 'Valid email required', 
-      requestId 
-    });
+    return res.status(400).json({ success: false, error: 'Valid email required', requestId: id });
   }
 
-  // 2. Generate a 6-digit OTP and store it temporarily
+  // Generate & store OTP
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   otpStore[email.toLowerCase()] = { otp, expires: Date.now() + 600000 };
-  console.log(`[${requestId}] OTP generated & stored`);
+  console.log(`[${id}] OTP generated`);
 
-  // 3. Check if Resend API key is configured correctly
-  const hasResendKey = !!process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.startsWith('re_');
-  console.log(`[${requestId}] RESEND_API_KEY exists: ${hasResendKey}`);
-
-  if (!hasResendKey) {
-    console.error(`[${requestId}] RESEND_API_KEY missing or invalid. Aborting.`);
-    return res.status(502).json({ 
-      success: false, 
-      error: 'Email service misconfigured', 
-      requestId 
-    });
+  // Validate Resend config
+  const hasValidKey = !!RESEND_API_KEY && RESEND_API_KEY.startsWith('re_');
+  if (!hasValidKey) {
+    console.error(`[${id}] RESEND_API_KEY missing or malformed`);
+    return res.status(502).json({ success: false, error: 'Email service misconfigured', requestId: id });
   }
 
-  // 4. Send the email via Resend (THIS IS THE FIX: await + isolated try/catch)
+  // Send via Resend
   try {
-    console.log(`[${requestId}] Awaiting resend.emails.send()`);
-    
-    // This line BLOCKS until Resend responds. No more fire-and-forget.
+    console.log(`[${id}] Calling resend.emails.send()`);
     const response = await resend.emails.send({
       from: `PostMarket <${FROM_EMAIL}>`,
       to: email,
@@ -156,357 +137,196 @@ app.post('/api/auth/send-otp', async (req, res) => {
           <h2 style="margin:0 0 16px;color:#1A1A1A;">Verify Your Identity</h2>
           <p style="margin:0 0 24px;color:#5A5A5A;">Your verification code:</p>
           <div style="font-size:28px;font-weight:700;letter-spacing:6px;text-align:center;padding:16px;background:#f7f2ea;border-radius:6px;color:#1A1A1A;">${otp}</div>
-          <p style="font-size:12px;color:#8E8E8E;margin:16px 0 0;text-align:center;">Valid for 10 minutes. If you did not request this, ignore it.</p>
+          <p style="font-size:12px;color:#8E8E8E;margin:16px 0 0;text-align:center;">Valid for 10 minutes. Ignore if not requested.</p>
         </div>`
     });
 
-    // Log Resend's response for debugging
-    console.log(`[${requestId}] Resend response: ${JSON.stringify(response)}`);
+    console.log(`[${id}] Resend raw response: ${JSON.stringify(response)}`);
 
-    // Only return success if Resend gave us a message ID
-    if (response?.id) {
-      console.log(`[${requestId}] Email queued. Message ID: ${response.id}`);
-      return res.json({ 
-        success: true, 
-        message: 'OTP sent', 
-        requestId 
-      });
-    } else {
-      console.error(`[${requestId}] Resend acknowledged but returned no ID.`, response);
-      return res.status(502).json({ 
-        success: false, 
-        error: 'Email service returned unexpected response', 
-        requestId 
-      });
+    // ✅ FIX: Resend v2 nests the ID inside `response.data.id`
+    const messageId = response?.data?.id;
+    if (messageId) {
+      console.log(`[${id}] ✅ Email queued. ID: ${messageId}`);
+      return res.json({ success: true, message: 'OTP sent', requestId: id });
     }
-    
+
+    console.error(`[${id}] ❌ Resend returned no ID.`, response);
+    return res.status(502).json({ success: false, error: 'Email service unexpected response', requestId: id });
+
   } catch (err) {
-    // Log the exact error from Resend
-    console.error(`[${requestId}] Resend API Exception: ${err.name} - ${err.message}`);
-    
+    console.error(`[${id}] ❌ Resend API Exception: ${err.name} - ${err.message}`);
     return res.status(500).json({
       success: false,
       error: 'Failed to send verification email',
-      // Only show error details in non-production to avoid leaking info
       details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
-      requestId
+      requestId: id
     });
   }
 });
 
 // POST /api/auth/verify-otp
 app.post('/api/auth/verify-otp', async (req, res) => {
-  const requestId = req.requestId;
   const { email, otp } = req.body;
-  
-  console.log(`[${requestId}] OTP verification attempt for: ${email}`);
-  
-  if (!email || !otp) {
-    return res.status(400).json({ success: false, message: 'Email and OTP required', requestId });
-  }
-  
+  const id = req.requestId;
+
+  if (!email || !otp) return res.status(400).json({ success: false, message: 'Email and OTP required', requestId: id });
+
   const key = email.toLowerCase();
   const record = otpStore[key];
-  
-  if (!record) {
-    console.log(`[${requestId}] OTP verification failed for ${email}: no record found`);
-    return res.status(400).json({ success: false, message: 'OTP expired or not found', requestId });
-  }
-  
+
+  if (!record) return res.status(400).json({ success: false, message: 'OTP not found', requestId: id });
   if (Date.now() > record.expires) {
     delete otpStore[key];
-    console.log(`[${requestId}] OTP verification failed for ${email}: expired`);
-    return res.status(400).json({ success: false, message: 'OTP expired', requestId });
+    return res.status(400).json({ success: false, message: 'OTP expired', requestId: id });
   }
-  
-  if (record.otp !== otp) {
-    console.log(`[${requestId}] OTP verification failed for ${email}: mismatch`);
-    return res.status(400).json({ success: false, message: 'Invalid OTP', requestId });
-  }
-  
-  // OTP valid — proceed to profile completion (handled by frontend)
+  if (record.otp !== otp) return res.status(400).json({ success: false, message: 'Invalid OTP', requestId: id });
+
   delete otpStore[key];
-  console.log(`[${requestId}] OTP verified for ${email}`);
-  res.json({ success: true, requestId });
+  console.log(`[${id}] ✅ OTP verified for ${email}`);
+  res.json({ success: true, requestId: id });
 });
 
-// POST /api/auth/signup — Create new user after OTP verification
+// POST /api/auth/signup
 app.post('/api/auth/signup', async (req, res) => {
-  const requestId = req.requestId;
-  const { 
-    type, email, password, name, 
-    // Creator-specific fields
-    niche, audience_desc, platforms, total_reach, rate, sa_id, payout_method, wallet_id,
-    // Advertiser-specific fields
-    company_name
-  } = req.body;
-  
-  console.log(`[${requestId}] Signup attempt for: ${email} (${type})`);
-  
-  if (!type || !email || !password || !name) {
-    return res.status(400).json({ success: false, message: 'Missing required fields', requestId });
-  }
-  
-  // Check for existing user
-  const { data: existing } = await supabase
-    .from('users')
-    .select('ref')
-    .eq('email', email.toLowerCase())
-    .single();
-    
-  if (existing) {
-    return res.status(409).json({ success: false, message: 'Email already registered', requestId });
-  }
-  
-  // Generate unique reference ID
+  const id = req.requestId;
+  const { type, email, password, name, niche, audience_desc, platforms, total_reach, rate, sa_id, payout_method, wallet_id, company_name } = req.body;
+
+  if (!type || !email || !password || !name) return res.status(400).json({ success: false, message: 'Missing required fields', requestId: id });
+
+  const { data: existing } = await supabase.from('users').select('ref').eq('email', email.toLowerCase()).single();
+  if (existing) return res.status(409).json({ success: false, message: 'Email already registered', requestId: id });
+
   const ref = 'usr_' + Math.random().toString(36).substring(2, 10);
-  
-  // Prepare user record
   const userRecord = {
-    ref,
-    type,
-    email: email.toLowerCase(),
-    password, // In production, hash this with bcrypt
-    name,
-    status: 'active',
+    ref, type, email: email.toLowerCase(), password, name, status: 'active',
     created_at: new Date().toISOString()
   };
-  
-  // Add creator-specific fields
+
   if (type === 'creator') {
-    if (!sa_id || sa_id.length !== 13) {
-      return res.status(400).json({ success: false, message: 'Valid 13-digit SA ID required', requestId });
-    }
-    if (!platforms || Object.keys(platforms).length === 0) {
-      return res.status(400).json({ success: false, message: 'At least one platform required', requestId });
-    }
-    Object.assign(userRecord, {
-      niche,
-      audience_desc,
-      platforms: JSON.stringify(platforms), // Store as JSONB
-      total_reach,
-      rate,
-      sa_id,
-      payout_method,
-      wallet_id
-    });
+    if (!sa_id || sa_id.length !== 13) return res.status(400).json({ success: false, message: 'Valid 13-digit SA ID required', requestId: id });
+    if (!platforms || Object.keys(platforms).length === 0) return res.status(400).json({ success: false, message: 'At least one platform required', requestId: id });
+    Object.assign(userRecord, { niche, audience_desc, platforms: JSON.stringify(platforms), total_reach, rate, sa_id, payout_method, wallet_id });
   }
-  
-  // Add advertiser-specific fields
-  if (type === 'advertiser' && company_name) {
-    userRecord.company_name = company_name;
-  }
-  
+  if (type === 'advertiser' && company_name) userRecord.company_name = company_name;
+
   try {
-    const { data: newUser, error } = await supabase
-      .from('users')
-      .insert([userRecord])
-      .select()
-      .single();
-      
-    if (error) {
-      console.error(`[${requestId}] Signup error:`, error.message);
-      return res.status(500).json({ success: false, message: 'Failed to create account', requestId });
-    }
-    
-    // Remove sensitive fields from response
+    const { data: newUser, error } = await supabase.from('users').insert([userRecord]).select().single();
+    if (error) throw error;
+
     const { password: _, ...safeUser } = newUser;
-    console.log(`[${requestId}] Signup successful for ${email} (ref: ${ref})`);
-    res.json({ success: true, user: safeUser, requestId });
-    
+    console.log(`[${id}] ✅ Signup success: ${email}`);
+    res.json({ success: true, user: safeUser, requestId: id });
   } catch (err) {
-    console.error(`[${requestId}] Signup exception:`, err.message);
-    res.status(500).json({ success: false, message: 'Server error during signup', requestId });
+    console.error(`[${id}] Signup error:`, err.message);
+    res.status(500).json({ success: false, message: 'Account creation failed', requestId: id });
   }
 });
 
-// ==================== BOOKING ENDPOINTS ====================
+// ==================== BOOKING ROUTES ====================
 
 // POST /api/bookings/create
 app.post('/api/bookings/create', async (req, res) => {
-  const requestId = req.requestId;
-  const { 
-    creator_ref, advertiser_ref, platforms, slots, dates, 
-    total_fee, creator_payout, campaign_brief, campaign_assets 
-  } = req.body;
-  
-  console.log(`[${requestId}] Booking creation attempt`);
-  
+  const id = req.requestId;
+  const { creator_ref, advertiser_ref, platforms, slots, dates, total_fee, creator_payout, campaign_brief, campaign_assets } = req.body;
+
   if (!creator_ref || !advertiser_ref || !slots?.length || !dates?.length) {
-    return res.status(400).json({ success: false, message: 'Missing required booking fields', requestId });
+    return res.status(400).json({ success: false, message: 'Missing booking fields', requestId: id });
   }
-  
+
   const bookingId = 'BK-' + Date.now().toString(36).toUpperCase();
-  
   try {
-    const { data: booking, error } = await supabase
-      .from('bookings')
-      .insert([{
-        id: bookingId,
-        creator_ref,
-        advertiser_ref,
-        platforms: JSON.stringify(platforms),
-        slots: JSON.stringify(slots),
-        dates: JSON.stringify(dates),
-        total_fee,
-        creator_payout,
-        status: 'provisional',
-        campaign_brief,
-        campaign_assets,
-        created_at: new Date().toISOString()
-      }])
-      .select()
-      .single();
-      
-    if (error) {
-      console.error(`[${requestId}] Create booking error:`, error.message);
-      return res.status(500).json({ success: false, message: 'Failed to create booking', requestId });
-    }
-    
-    console.log(`[${requestId}] Created booking ${bookingId} for creator ${creator_ref}`);
-    res.json({ success: true, booking, requestId });
-    
+    const { data, error } = await supabase.from('bookings').insert([{
+      id: bookingId, creator_ref, advertiser_ref,
+      platforms: JSON.stringify(platforms), slots: JSON.stringify(slots), dates: JSON.stringify(dates),
+      total_fee, creator_payout, status: 'provisional', campaign_brief, campaign_assets,
+      created_at: new Date().toISOString()
+    }]).select().single();
+
+    if (error) throw error;
+    console.log(`[${id}] ✅ Booking created: ${bookingId}`);
+    res.json({ success: true, booking: data, requestId: id });
   } catch (err) {
-    console.error(`[${requestId}] Create booking exception:`, err.message);
-    res.status(500).json({ success: false, message: 'Server error', requestId });
+    console.error(`[${id}] Booking error:`, err.message);
+    res.status(500).json({ success: false, message: 'Booking failed', requestId: id });
   }
 });
 
 // POST /api/bookings/:id/accept
 app.post('/api/bookings/:id/accept', async (req, res) => {
-  const requestId = req.requestId;
-  const { id } = req.params;
-  
-  console.log(`[${requestId}] Accept booking attempt: ${id}`);
-  
+  const { id: bookingId } = req.params;
+  const reqId = req.requestId;
   try {
-    const { data: booking, error } = await supabase
-      .from('bookings')
-      .update({ status: 'confirmed', confirmed_at: new Date().toISOString() })
-      .eq('id', id)
-      .select()
-      .single();
-      
-    if (error || !booking) {
-      return res.status(404).json({ success: false, message: 'Booking not found', requestId });
-    }
-    
-    console.log(`[${requestId}] Accepted booking ${id}`);
-    res.json({ success: true, booking, requestId });
-    
+    const { data, error } = await supabase.from('bookings').update({ status: 'confirmed', confirmed_at: new Date().toISOString() }).eq('id', bookingId).select().single();
+    if (error || !data) return res.status(404).json({ success: false, message: 'Booking not found', requestId: reqId });
+    console.log(`[${reqId}] ✅ Booking accepted: ${bookingId}`);
+    res.json({ success: true, booking: data, requestId: reqId });
   } catch (err) {
-    console.error(`[${requestId}] Accept booking exception:`, err.message);
-    res.status(500).json({ success: false, message: 'Server error', requestId });
+    console.error(`[${reqId}] Accept error:`, err.message);
+    res.status(500).json({ success: false, message: 'Server error', requestId: reqId });
   }
 });
 
-// ==================== NOTIFICATION ENDPOINTS ====================
+// ==================== NOTIFICATION ROUTES ====================
 
-// POST /api/notify-creator — Called after booking creation
+// POST /api/notify-creator
 app.post('/api/notify-creator', async (req, res) => {
-  const requestId = req.requestId;
   const { creator_email, creator_name, adv_name, booking_id, dates, slots, total_fee, brief } = req.body;
-  
-  console.log(`[${requestId}] Notify creator attempt: ${creator_email}`);
-  
-  if (!RESEND_API_KEY || !resend) {
-    console.warn(`[${requestId}] Skipping creator notification — Resend not configured`);
-    return res.json({ success: true, skipped: true, requestId });
-  }
-  
+  const id = req.requestId;
+  if (!RESEND_API_KEY || !resend) return res.json({ success: true, skipped: true, requestId: id });
+
   try {
     const response = await resend.emails.send({
       from: `PostMarket <${FROM_EMAIL}>`,
       to: creator_email,
       subject: `New Booking Request: ${booking_id}`,
-      html: `
-        <div style="font-family: system-ui, sans-serif; padding: 24px; max-width: 600px; margin: auto;">
-          <h2 style="color: #1A1A1A;">New Booking Request</h2>
-          <p><strong>Advertiser:</strong> ${adv_name}</p>
-          <p><strong>Booking ID:</strong> ${booking_id}</p>
-          <p><strong>Dates:</strong> ${dates.join(', ')}</p>
-          <p><strong>Timeslots:</strong> ${slots.join(', ')}</p>
-          <p><strong>Total Fee:</strong> R${total_fee}</p>
-          ${brief ? `<p><strong>Brief:</strong><br>${brief}</p>` : ''}
-          <p style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #eee;">
-            <a href="${FRONTEND_URL}" style="background: #1A1A1A; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px;">View in Dashboard</a>
-          </p>
-        </div>`
+      html: `<div style="font-family:system-ui;padding:24px;max-width:600px;"><h2>New Booking Request</h2><p><b>Advertiser:</b> ${adv_name}</p><p><b>ID:</b> ${booking_id}</p><p><b>Dates:</b> ${dates.join(', ')}</p><p><b>Slots:</b> ${slots.join(', ')}</p><p><b>Fee:</b> R${total_fee}</p>${brief ? `<p><b>Brief:</b><br>${brief}</p>` : ''}</div>`
     });
-    
-    console.log(`[${requestId}] Creator notification sent to ${creator_email}. Message ID: ${response?.id}`);
-    res.json({ success: true, messageId: response?.id, requestId });
-    
+    console.log(`[${id}] ✅ Creator notified: ${creator_email} | ID: ${response?.data?.id}`);
+    res.json({ success: true, messageId: response?.data?.id, requestId: id });
   } catch (err) {
-    console.error(`[${requestId}] Failed to send creator notification:`, err.message);
-    // Don't fail the booking if notification fails
-    res.json({ success: true, warning: 'Notification failed but booking created', requestId });
+    console.error(`[${id}] Notify creator failed:`, err.message);
+    res.json({ success: true, warning: 'Notification skipped', requestId: id });
   }
 });
 
-// POST /api/notify-status-change — Called when booking status changes
+// POST /api/notify-status-change
 app.post('/api/notify-status-change', async (req, res) => {
-  const requestId = req.requestId;
   const { adv_email, adv_name, creator_name, booking_id, status } = req.body;
-  
-  console.log(`[${requestId}] Notify status change attempt: ${adv_email}`);
-  
-  if (!RESEND_API_KEY || !resend) {
-    console.warn(`[${requestId}] Skipping status notification — Resend not configured`);
-    return res.json({ success: true, skipped: true, requestId });
-  }
-  
+  const id = req.requestId;
+  if (!RESEND_API_KEY || !resend) return res.json({ success: true, skipped: true, requestId: id });
+
   try {
     const response = await resend.emails.send({
       from: `PostMarket <${FROM_EMAIL}>`,
       to: adv_email,
       subject: `Booking Update: ${booking_id} — ${status.toUpperCase()}`,
-      html: `
-        <div style="font-family: system-ui, sans-serif; padding: 24px; max-width: 600px; margin: auto;">
-          <h2 style="color: #1A1A1A;">Booking Status Updated</h2>
-          <p><strong>Booking ID:</strong> ${booking_id}</p>
-          <p><strong>Creator:</strong> ${creator_name}</p>
-          <p><strong>New Status:</strong> <span style="background: #e8f5e9; color: #2e7d32; padding: 4px 8px; border-radius: 4px;">${status}</span></p>
-          <p style="margin-top: 24px;">
-            <a href="${FRONTEND_URL}" style="background: #1A1A1A; color: white; padding: 12px 24px; text-decoration: none; border-radius: 4px;">View Details</a>
-          </p>
-        </div>`
+      html: `<div style="font-family:system-ui;padding:24px;max-width:600px;"><h2>Booking Status Updated</h2><p><b>ID:</b> ${booking_id}</p><p><b>Creator:</b> ${creator_name}</p><p><b>Status:</b> ${status}</p></div>`
     });
-    
-    console.log(`[${requestId}] Advertiser notification sent to ${adv_email}. Message ID: ${response?.id}`);
-    res.json({ success: true, messageId: response?.id, requestId });
-    
+    console.log(`[${id}] ✅ Advertiser notified: ${adv_email} | ID: ${response?.data?.id}`);
+    res.json({ success: true, messageId: response?.data?.id, requestId: id });
   } catch (err) {
-    console.error(`[${requestId}] Failed to send status notification:`, err.message);
-    res.json({ success: true, warning: 'Notification failed', requestId });
+    console.error(`[${id}] Notify status failed:`, err.message);
+    res.json({ success: true, warning: 'Notification skipped', requestId: id });
   }
 });
 
-// ==================== ERROR HANDLING ====================
+// ==================== ERROR HANDLING & STARTUP ====================
 app.use((err, req, res, next) => {
-  const requestId = req.requestId || 'unknown';
-  console.error(`[${requestId}] Unhandled exception:`, err.message);
-  res.status(500).json({ success: false, message: 'Internal server error', requestId });
+  const id = req.requestId || 'unknown';
+  console.error(`[${id}] Unhandled exception:`, err.message);
+  res.status(500).json({ success: false, message: 'Internal server error', requestId: id });
 });
 
-// 404 handler
 app.use((req, res) => {
-  const requestId = req.requestId || 'unknown';
-  console.log(`[${requestId}] 404: ${req.method} ${req.path}`);
-  res.status(404).json({ success: false, message: 'Endpoint not found', requestId });
+  res.status(404).json({ success: false, message: 'Endpoint not found', requestId: req.requestId });
 });
 
-// ==================== START SERVER ====================
 app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n✅ Server running on port ${PORT}`);
-  console.log(`🌐 Frontend URL: ${FRONTEND_URL}`);
-  console.log(`📧 FROM_EMAIL: ${FROM_EMAIL}`);
-  console.log(`🔑 RESEND_API_KEY configured: ${!!RESEND_API_KEY}`);
-  console.log(`🗄️ Supabase URL: ${SUPABASE_URL?.substring(0, 30)}...\n`);
+  console.log(`\n✅ POSTMARKET SERVER ONLINE`);
+  console.log(`🌐 Frontend: ${FRONTEND_URL}`);
+  console.log(`📧 FROM: ${FROM_EMAIL}`);
+  console.log(`🔑 Resend: ${!!RESEND_API_KEY ? 'CONFIGURED' : 'MISSING'}`);
+  console.log(`🗄️  Supabase: ${SUPABASE_URL ? 'CONNECTED' : 'MISSING'}\n`);
 });
 
-// Graceful shutdown
-process.on('SIGTERM', () => {
-  console.log('[SHUTDOWN] Received SIGTERM, closing server...');
-  process.exit(0);
-});
+process.on('SIGTERM', () => { console.log('[SHUTDOWN] Graceful exit'); process.exit(0); });

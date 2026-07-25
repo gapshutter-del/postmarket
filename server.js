@@ -96,82 +96,75 @@ app.post('/api/auth/login', async (req, res) => {
 });
 
 // POST /api/auth/send-otp — HEAVILY INSTRUMENTED FOR DEBUGGING
+const crypto = require('crypto');
+// Ensure Resend SDK is imported at the top of server.js
+// const { Resend } = require('resend');
+// const resend = new Resend(process.env.RESEND_API_KEY);
+
 app.post('/api/auth/send-otp', async (req, res) => {
-  console.log(`\n[DEBUG] === OTP REQUEST START ===`);
-  console.log(`[DEBUG] Timestamp: ${new Date().toISOString()}`);
-  
+  const requestId = crypto.randomUUID();
+  console.log(`[${requestId}] POST /api/auth/send-otp - Request received`);
+
   const { email } = req.body;
-  console.log(`[DEBUG] Received email: ${email}`);
-  
-  // Validation
-  if (!email || !email.includes('@')) {
-    console.log(`[DEBUG] Validation failed: invalid email`);
-    return res.status(400).json({ success: false, message: 'Valid email required' });
+  console.log(`[${requestId}] Email: ${email}`);
+
+  // 1. Validation
+  if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    console.log(`[${requestId}] Validation failed`);
+    return res.status(400).json({ success: false, error: 'Valid email required', requestId });
   }
-  
-  // Generate OTP
+
+  // 2. OTP Generation & Storage
   const otp = Math.floor(100000 + Math.random() * 900000).toString();
   otpStore[email.toLowerCase()] = { otp, expires: Date.now() + 600000 };
-  console.log(`[DEBUG] OTP generated and stored for ${email}`);
-  
-  // Check Resend API Key
-  console.log(`[DEBUG] RESEND_API_KEY exists: ${!!RESEND_API_KEY}`);
-  console.log(`[DEBUG] RESEND_API_KEY length: ${RESEND_API_KEY ? RESEND_API_KEY.length : 'N/A'}`);
-  if (RESEND_API_KEY) {
-    console.log(`[DEBUG] RESEND_API_KEY prefix: ${RESEND_API_KEY.substring(0, 4)}...`);
+  console.log(`[${requestId}] OTP generated & stored`);
+
+  // 3. Verify Resend Key
+  const hasResendKey = !!process.env.RESEND_API_KEY && process.env.RESEND_API_KEY.startsWith('re_');
+  console.log(`[${requestId}] RESEND_API_KEY exists: ${hasResendKey}`);
+
+  if (!hasResendKey) {
+    console.error(`[${requestId}] RESEND_API_KEY missing or invalid. Aborting.`);
+    return res.status(502).json({ success: false, error: 'Email service misconfigured', requestId });
   }
-  
-  // Check FROM_EMAIL
-  console.log(`[DEBUG] FROM_EMAIL: ${FROM_EMAIL}`);
-  
-  // If no Resend key, return success but log warning (for local dev)
-  if (!RESEND_API_KEY || !resend) {
-    console.warn(`[DEBUG] Skipping Resend call — no API key configured`);
-    console.log(`[DEBUG] OTP for ${email}: ${otp} (DEV MODE)`);
-    return res.json({ 
-      success: true, 
-      devMode: true, 
-      message: 'OTP generated (Resend not configured)' 
+
+  // 4. Send Email (Awaited & Isolated)
+  const FROM_EMAIL = process.env.FROM_EMAIL || 'no-reply@postnstatusmarket.co.za';
+  try {
+    console.log(`[${requestId}] Awaiting resend.emails.send()`);
+    
+    const response = await resend.emails.send({
+      from: `PostMarket <${FROM_EMAIL}>`,
+      to: email,
+      subject: 'PostMarket Verification Code',
+      html: `
+        <div style="font-family:system-ui,sans-serif;padding:24px;max-width:500px;margin:auto;background:#fff;border:1px solid #eee;border-radius:8px;">
+          <h2 style="margin:0 0 16px;color:#1A1A1A;">Verify Your Identity</h2>
+          <p style="margin:0 0 24px;color:#5A5A5A;">Your verification code:</p>
+          <div style="font-size:28px;font-weight:700;letter-spacing:6px;text-align:center;padding:16px;background:#f7f2ea;border-radius:6px;color:#1A1A1A;">${otp}</div>
+          <p style="font-size:12px;color:#8E8E8E;margin:16px 0 0;text-align:center;">Valid for 10 minutes. If you did not request this, ignore it.</p>
+        </div>`
+    });
+
+    console.log(`[${requestId}] Resend response: ${JSON.stringify(response)}`);
+
+    if (response.id) {
+      console.log(`[${requestId}] Email queued. Message ID: ${response.id}`);
+      return res.json({ success: true, message: 'OTP sent', requestId });
+    } else {
+      console.error(`[${requestId}] Resend acknowledged but returned no ID.`, response);
+      return res.status(502).json({ success: false, error: 'Email service returned unexpected response', requestId });
+    }
+  } catch (err) {
+    console.error(`[${requestId}] Resend API Exception: ${err.name} - ${err.message}`);
+    return res.status(500).json({
+      success: false,
+      error: 'Failed to send verification email',
+      details: process.env.NODE_ENV !== 'production' ? err.message : undefined,
+      requestId
     });
   }
-  
-  // Prepare email payload
-  const emailPayload = {
-    from: FROM_EMAIL,
-    to: email,
-    subject: 'PostMarket Verification Code',
-    html: `
-      <div style="font-family: system-ui, sans-serif; padding: 24px; max-width: 500px; margin: auto; background: #fff; border: 1px solid #eee; border-radius: 8px;">
-        <h2 style="margin: 0 0 16px; color: #1A1A1A;">Verify Your Identity</h2>
-        <p style="margin: 0 0 24px; color: #5A5A5A;">Use this code to continue:</p>
-        <div style="font-size: 28px; font-weight: 700; letter-spacing: 6px; text-align: center; padding: 16px; background: #f7f2ea; border-radius: 6px; color: #1A1A1A; margin-bottom: 24px;">${otp}</div>
-        <p style="font-size: 12px; color: #8E8E8E; margin: 0; text-align: center;">Valid for 10 minutes. If you did not request this, please ignore.</p>
-      </div>`
-  };
-  
-  console.log(`[DEBUG] Email payload prepared.`);
-  console.log(`[DEBUG] From: ${emailPayload.from}`);
-  console.log(`[DEBUG] To: ${emailPayload.to}`);
-  console.log(`[DEBUG] Subject: ${emailPayload.subject}`);
-  
-  // Attempt to send via Resend
-  console.log(`[DEBUG] Calling resend.emails.send()...`);
-  
-  try {
-    const response = await resend.emails.send(emailPayload);
-    
-    console.log(`[DEBUG] Resend API call completed`);
-    console.log(`[DEBUG] Response type: ${typeof response}`);
-    console.log(`[DEBUG] Full response: ${JSON.stringify(response, null, 2)}`);
-    
-    // Check for error property in response (Resend v2+ returns errors in response body)
-    if (response && response.error) {
-      console.error(`[DEBUG] Resend response contained error:`, response.error);
-      return res.status(500).json({ 
-        success: false, 
-        message: 'Email service error',
-        debug: { error: response.error }
-      });
+});
     }
     
     // Success: response should contain an `id`

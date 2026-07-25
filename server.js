@@ -27,7 +27,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 const resend = RESEND_API_KEY ? new Resend(RESEND_API_KEY) : null;
 
 // FROM_EMAIL must match your verified sending domain in Resend
-const FROM_EMAIL = 'PostMarket <no-reply@postnstatusmarket.co.za>';
+const FROM_EMAIL = 'PostMarket <no-reply@postnstatus.market.co.za>';
 
 // In-memory OTP store (for demo; use Redis in production)
 const otpStore = {};

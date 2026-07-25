@@ -186,7 +186,7 @@ app.post('/api/auth/verify-otp', async (req, res) => {
   res.json({ success: true, requestId: id });
 });
 
-// POST /api/auth/signup
+// POST /api/auth/signup — FIXED: removed created_at to match Supabase schema
 app.post('/api/auth/signup', async (req, res) => {
   const id = req.requestId;
   const { type, email, password, name, niche, audience_desc, platforms, total_reach, rate, sa_id, payout_method, wallet_id, company_name } = req.body;
@@ -197,9 +197,11 @@ app.post('/api/auth/signup', async (req, res) => {
   if (existing) return res.status(409).json({ success: false, message: 'Email already registered', requestId: id });
 
   const ref = 'usr_' + Math.random().toString(36).substring(2, 10);
+  
+  // ✅ FIX: Removed created_at — Supabase auto-generates it if column exists, or we omit it
   const userRecord = {
-    ref, type, email: email.toLowerCase(), password, name, status: 'active',
-    created_at: new Date().toISOString()
+    ref, type, email: email.toLowerCase(), password, name, status: 'active'
+    // created_at removed — let Supabase handle defaults or add column later
   };
 
   if (type === 'creator') {
